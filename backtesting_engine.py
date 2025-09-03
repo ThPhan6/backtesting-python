@@ -62,8 +62,29 @@ class BacktestingEngine:
             if current_date in signals.index:
                 signal = signals.loc[current_date, 'Position']
                 
-                # Buy signal
-                if signal == 1 and shares == 0:
+                # Buy signal - enter long position
+                if signal == 1:
+                    # If we already have shares, close current position first
+                    if shares > 0 and current_trade:
+                        proceeds = shares * current_price
+                        cash += proceeds
+                        
+                        # Record completed trade
+                        trade_return = (current_price - current_trade['Entry Price']) / current_trade['Entry Price']
+                        pnl = proceeds - (current_trade['Shares'] * current_trade['Entry Price'])
+                        
+                        trades.append({
+                            'Entry Date': current_trade['Entry Date'],
+                            'Exit Date': current_date,
+                            'Entry Price': current_trade['Entry Price'],
+                            'Exit Price': current_price,
+                            'Shares': current_trade['Shares'],
+                            'Return': trade_return,
+                            'P&L': pnl,
+                            'Type': 'Long Position Close'
+                        })
+                    
+                    # Enter new long position
                     shares_to_buy = int((cash * self.position_size) / current_price)
                     if shares_to_buy > 0:
                         cost = shares_to_buy * current_price
@@ -77,7 +98,7 @@ class BacktestingEngine:
                                 'Type': 'Long'
                             }
                 
-                # Sell signal
+                # Sell signal - close position
                 elif signal == -1 and shares > 0:
                     proceeds = shares * current_price
                     cash += proceeds
@@ -95,7 +116,7 @@ class BacktestingEngine:
                             'Shares': current_trade['Shares'],
                             'Return': trade_return,
                             'P&L': pnl,
-                            'Type': current_trade['Type']
+                            'Type': 'Long Position Close'
                         })
                     
                     shares = 0
