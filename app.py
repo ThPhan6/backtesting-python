@@ -165,7 +165,8 @@ if st.sidebar.button("🚀 Run Backtest", type="primary"):
             else:
                 # Handle multi-level columns (sometimes yfinance returns ticker info in columns)
                 if isinstance(data.columns, pd.MultiIndex):
-                    data.columns = [col[0] if col[1] == symbol else col[1] for col in data.columns]
+                    # Flatten multi-level columns - take the first level (price type)
+                    data.columns = [col[0] for col in data.columns.values]
                 
                 # Ensure we have the required OHLCV columns
                 required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
