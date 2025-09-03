@@ -157,41 +157,66 @@ if st.sidebar.button("🚀 Run Backtest", type="primary"):
     try:
         with st.spinner("Fetching data and running backtest..."):
             # Fetch data
-            data = yf.download(symbol, start=start_date, end=end_date)
+            data = yf.download(symbol, start=start_date, end=end_date, progress=False)
             
-            if data.empty:
+            # Clean and validate data
+            if data is None or data.empty:
                 st.error(f"No data found for symbol {symbol} in the specified date range.")
             else:
-                # Initialize strategy builder and backtesting engine
-                strategy_builder = StrategyBuilder(strategy_type, strategy_params)
-                engine = BacktestingEngine(
-                    initial_capital=initial_capital,
-                    position_size=position_size,
-                    stop_loss=stop_loss if stop_loss > 0 else None,
-                    take_profit=take_profit if take_profit > 0 else None
-                )
+                # Handle multi-level columns (sometimes yfinance returns ticker info in columns)
+                if isinstance(data.columns, pd.MultiIndex):
+                    data.columns = [col[0] if col[1] == symbol else col[1] for col in data.columns]
                 
-                # Generate signals
-                signals = strategy_builder.generate_signals(data)
+                # Ensure we have the required OHLCV columns
+                required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                missing_cols = [col for col in required_cols if col not in data.columns]
                 
-                # Run backtest
-                results = engine.run_backtest(data, signals)
-                
-                # Store results in session state
-                st.session_state.backtest_results = results
-                st.session_state.strategy_config = {
-                    'symbol': symbol,
-                    'strategy_type': strategy_type,
-                    'strategy_params': strategy_params,
-                    'initial_capital': initial_capital,
-                    'position_size': position_size,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit,
-                    'start_date': start_date,
-                    'end_date': end_date
-                }
-                
-                st.success("Backtest completed successfully!")
+                if missing_cols:
+                    st.error(f"Missing required columns: {missing_cols}")
+                else:
+                    # Clean the data - remove any rows with invalid data
+                    data = data.dropna()
+                    
+                    # Ensure all price columns are numeric
+                    for col in ['Open', 'High', 'Low', 'Close']:
+                        data[col] = pd.to_numeric(data[col], errors='coerce')
+                    
+                    # Remove any remaining invalid rows
+                    data = data.dropna()
+                    
+                    if data.empty:
+                        st.error("No valid data available after cleaning.")
+                    else:
+                        # Initialize strategy builder and backtesting engine
+                        strategy_builder = StrategyBuilder(strategy_type, strategy_params)
+                        engine = BacktestingEngine(
+                            initial_capital=initial_capital,
+                            position_size=position_size,
+                            stop_loss=stop_loss if stop_loss > 0 else None,
+                            take_profit=take_profit if take_profit > 0 else None
+                        )
+                        
+                        # Generate signals
+                        signals = strategy_builder.generate_signals(data)
+                        
+                        # Run backtest
+                        results = engine.run_backtest(data, signals)
+                        
+                        # Store results in session state
+                        st.session_state.backtest_results = results
+                        st.session_state.strategy_config = {
+                            'symbol': symbol,
+                            'strategy_type': strategy_type,
+                            'strategy_params': strategy_params,
+                            'initial_capital': initial_capital,
+                            'position_size': position_size,
+                            'stop_loss': stop_loss,
+                            'take_profit': take_profit,
+                            'start_date': start_date,
+                            'end_date': end_date
+                        }
+                        
+                        st.success("Backtest completed successfully!")
                 
     except Exception as e:
         st.error(f"Error running backtest: {str(e)}")
