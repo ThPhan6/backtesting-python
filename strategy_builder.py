@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
 from typing import Dict, Any
 
 class StrategyBuilder:
@@ -51,20 +50,30 @@ class StrategyBuilder:
         long_window = self.parameters['long_window']
         
         # Calculate SMAs
-        df['SMA_Short'] = ta.sma(df['Close'], length=short_window)
-        df['SMA_Long'] = ta.sma(df['Close'], length=long_window)
+        df['SMA_Short'] = df['Close'].rolling(window=short_window).mean()
+        df['SMA_Long'] = df['Close'].rolling(window=long_window).mean()
         
-        # Generate signals
-        df['Signal'] = 0
+        # Generate signals with position tracking
         df['Position'] = 0
+        current_position = 0
         
-        # Buy signal: short SMA crosses above long SMA
-        df.loc[df['SMA_Short'] > df['SMA_Long'], 'Signal'] = 1
+        for i in range(long_window, len(df)):
+            sma_short = df['SMA_Short'].iloc[i]
+            sma_long = df['SMA_Long'].iloc[i]
+            sma_short_prev = df['SMA_Short'].iloc[i-1]
+            sma_long_prev = df['SMA_Long'].iloc[i-1]
+            
+            # Buy signal: short SMA crosses above long SMA
+            if (sma_short > sma_long and sma_short_prev <= sma_long_prev and current_position <= 0):
+                df.loc[df.index[i], 'Position'] = 1
+                current_position = 1
+            
+            # Sell signal: short SMA crosses below long SMA
+            elif (sma_short < sma_long and sma_short_prev >= sma_long_prev and current_position >= 0):
+                df.loc[df.index[i], 'Position'] = -1
+                current_position = -1
         
-        # Generate position changes
-        df['Position'] = df['Signal'].diff()
-        
-        # Clean up signals (only keep actual crossovers)
+        # Filter only actual signals
         signals = df[df['Position'] != 0].copy()
         
         return signals[['Position']]
@@ -79,17 +88,25 @@ class StrategyBuilder:
         overbought = self.parameters['rsi_overbought']
         
         # Calculate RSI
-        df['RSI'] = ta.rsi(df['Close'], length=rsi_period)
+        df['RSI'] = self._calculate_rsi(df['Close'], rsi_period)
         
-        # Generate signals
-        df['Signal'] = 0
+        # Generate signals with position tracking
         df['Position'] = 0
+        current_position = 0
         
-        # Buy signal: RSI crosses below oversold level
-        df.loc[(df['RSI'] < oversold) & (df['RSI'].shift(1) >= oversold), 'Position'] = 1
-        
-        # Sell signal: RSI crosses above overbought level
-        df.loc[(df['RSI'] > overbought) & (df['RSI'].shift(1) <= overbought), 'Position'] = -1
+        for i in range(rsi_period, len(df)):
+            rsi_val = df['RSI'].iloc[i]
+            rsi_prev = df['RSI'].iloc[i-1] if i > 0 else rsi_val
+            
+            # Buy signal: RSI crosses below oversold level
+            if (rsi_val < oversold and rsi_prev >= oversold and current_position <= 0):
+                df.loc[df.index[i], 'Position'] = 1
+                current_position = 1
+            
+            # Sell signal: RSI crosses above overbought level
+            elif (rsi_val > overbought and rsi_prev <= overbought and current_position >= 0):
+                df.loc[df.index[i], 'Position'] = -1
+                current_position = -1
         
         # Filter only actual signals
         signals = df[df['Position'] != 0].copy()
@@ -107,28 +124,31 @@ class StrategyBuilder:
         rsi_threshold = self.parameters['rsi_threshold']
         
         # Calculate indicators
-        df['EMA_Short'] = ta.ema(df['Close'], length=ema_short)
-        df['EMA_Long'] = ta.ema(df['Close'], length=ema_long)
-        df['RSI'] = ta.rsi(df['Close'], length=rsi_period)
+        df['EMA_Short'] = df['Close'].ewm(span=ema_short).mean()
+        df['EMA_Long'] = df['Close'].ewm(span=ema_long).mean()
+        df['RSI'] = self._calculate_rsi(df['Close'], rsi_period)
         
-        # Generate signals
+        # Generate signals with position tracking
         df['Position'] = 0
+        df['Signal'] = 0
+        current_position = 0
         
-        # Buy conditions: EMA crossover up and RSI above threshold
-        buy_condition = (
-            (df['EMA_Short'] > df['EMA_Long']) & 
-            (df['EMA_Short'].shift(1) <= df['EMA_Long'].shift(1)) &
-            (df['RSI'] > rsi_threshold)
-        )
-        
-        # Sell conditions: EMA crossover down or RSI below threshold
-        sell_condition = (
-            (df['EMA_Short'] < df['EMA_Long']) & 
-            (df['EMA_Short'].shift(1) >= df['EMA_Long'].shift(1))
-        ) | (df['RSI'] < rsi_threshold)
-        
-        df.loc[buy_condition, 'Position'] = 1
-        df.loc[sell_condition, 'Position'] = -1
+        for i in range(max(ema_long, rsi_period), len(df)):
+            ema_short_val = df['EMA_Short'].iloc[i]
+            ema_long_val = df['EMA_Long'].iloc[i]
+            rsi_val = df['RSI'].iloc[i]
+            
+            # Buy signal: EMA trend is bullish and RSI is above threshold
+            if (ema_short_val > ema_long_val and rsi_val > rsi_threshold and current_position <= 0):
+                df.loc[df.index[i], 'Position'] = 1
+                df.loc[df.index[i], 'Signal'] = 1
+                current_position = 1
+            
+            # Sell signal: EMA trend is bearish or RSI drops below threshold
+            elif ((ema_short_val < ema_long_val or rsi_val < rsi_threshold) and current_position >= 0):
+                df.loc[df.index[i], 'Position'] = -1
+                df.loc[df.index[i], 'Signal'] = -1
+                current_position = -1
         
         # Filter only actual signals
         signals = df[df['Position'] != 0].copy()
@@ -146,14 +166,14 @@ class StrategyBuilder:
         # Add SMA condition
         if self.parameters.get('use_sma', False):
             sma_period = self.parameters['sma_period']
-            df['SMA'] = ta.sma(df['Close'], length=sma_period)
+            df['SMA'] = df['Close'].rolling(window=sma_period).mean()
             buy_conditions.append(df['Close'] > df['SMA'])
             sell_conditions.append(df['Close'] < df['SMA'])
         
         # Add EMA condition
         if self.parameters.get('use_ema', False):
             ema_period = self.parameters['ema_period']
-            df['EMA'] = ta.ema(df['Close'], length=ema_period)
+            df['EMA'] = df['Close'].ewm(span=ema_period).mean()
             buy_conditions.append(df['Close'] > df['EMA'])
             sell_conditions.append(df['Close'] < df['EMA'])
         
@@ -162,7 +182,7 @@ class StrategyBuilder:
             rsi_period = self.parameters['rsi_period']
             rsi_buy = self.parameters['rsi_buy']
             rsi_sell = self.parameters['rsi_sell']
-            df['RSI'] = ta.rsi(df['Close'], length=rsi_period)
+            df['RSI'] = self._calculate_rsi(df['Close'], rsi_period)
             buy_conditions.append(df['RSI'] < rsi_buy)
             sell_conditions.append(df['RSI'] > rsi_sell)
         
@@ -184,6 +204,22 @@ class StrategyBuilder:
         
         return signals[['Position']]
     
+    def _calculate_rsi(self, price_series: pd.Series, period: int = 14) -> pd.Series:
+        """
+        Calculate RSI (Relative Strength Index) using pandas.
+        """
+        delta = price_series.diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi
+    
     def get_indicator_data(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         Get calculated indicator data for visualization.
@@ -193,19 +229,19 @@ class StrategyBuilder:
         if self.strategy_type == "Simple Moving Average Crossover":
             short_window = self.parameters['short_window']
             long_window = self.parameters['long_window']
-            df['SMA_Short'] = ta.sma(df['Close'], length=short_window)
-            df['SMA_Long'] = ta.sma(df['Close'], length=long_window)
+            df['SMA_Short'] = df['Close'].rolling(window=short_window).mean()
+            df['SMA_Long'] = df['Close'].rolling(window=long_window).mean()
             
         elif self.strategy_type == "RSI Mean Reversion":
             rsi_period = self.parameters['rsi_period']
-            df['RSI'] = ta.rsi(df['Close'], length=rsi_period)
+            df['RSI'] = self._calculate_rsi(df['Close'], rsi_period)
             
         elif self.strategy_type == "EMA + RSI Combo":
             ema_short = self.parameters['ema_short']
             ema_long = self.parameters['ema_long']
             rsi_period = self.parameters['rsi_period']
-            df['EMA_Short'] = ta.ema(df['Close'], length=ema_short)
-            df['EMA_Long'] = ta.ema(df['Close'], length=ema_long)
-            df['RSI'] = ta.rsi(df['Close'], length=rsi_period)
+            df['EMA_Short'] = df['Close'].ewm(span=ema_short).mean()
+            df['EMA_Long'] = df['Close'].ewm(span=ema_long).mean()
+            df['RSI'] = self._calculate_rsi(df['Close'], rsi_period)
         
         return df
