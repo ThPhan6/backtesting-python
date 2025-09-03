@@ -22,7 +22,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("📈 Trading Strategy Backtester")
+# Dynamic title that updates with the selected symbol
+if 'current_symbol' not in st.session_state:
+    st.session_state.current_symbol = "AAPL"
+
+# Get current symbol
+current_symbol = symbol if 'symbol' in locals() else "AAPL"
+st.session_state.current_symbol = current_symbol
+
+st.title(f"📈 Trading Strategy Backtester + {current_symbol}")
 st.markdown("Test your trading strategies against historical market data with comprehensive performance analytics.")
 
 # Initialize session state
@@ -120,10 +128,10 @@ elif strategy_type == "Custom":
 st.sidebar.subheader("⚠️ Risk Management")
 initial_capital = st.sidebar.number_input(
     "Initial Capital ($)",
-    min_value=1000,
+    min_value=100,
     max_value=1000000,
     value=10000,
-    step=1000
+    step=100
 )
 
 position_size = st.sidebar.slider(
@@ -134,23 +142,54 @@ position_size = st.sidebar.slider(
     help="Percentage of capital to use per trade"
 ) / 100
 
-stop_loss = st.sidebar.number_input(
-    "Stop Loss (%)",
-    min_value=0.0,
-    max_value=20.0,
-    value=0.0,
-    step=0.5,
-    help="Set to 0 to disable stop loss"
-) / 100
+# Risk/Reward Ratio Setting
+use_risk_reward = st.sidebar.checkbox(
+    "Use Risk/Reward Ratio",
+    value=True,
+    help="Use risk/reward ratio instead of individual SL/TP"
+)
 
-take_profit = st.sidebar.number_input(
-    "Take Profit (%)",
-    min_value=0.0,
-    max_value=50.0,
-    value=0.0,
-    step=0.5,
-    help="Set to 0 to disable take profit"
-) / 100
+if use_risk_reward:
+    risk_percent = st.sidebar.number_input(
+        "Risk per Trade (%)",
+        min_value=0.5,
+        max_value=10.0,
+        value=3.0,
+        step=0.5,
+        help="Maximum loss per trade as % of capital"
+    )
+    
+    reward_ratio = st.sidebar.number_input(
+        "Reward Ratio (Risk:Reward)",
+        min_value=1.0,
+        max_value=5.0,
+        value=2.0,
+        step=0.1,
+        help="Reward ratio (e.g., 2.0 means 1:2 risk/reward)"
+    )
+    
+    stop_loss = risk_percent / 100
+    take_profit = (risk_percent * reward_ratio) / 100
+    
+    st.sidebar.info(f"📊 Risk/Reward: {risk_percent:.1f}% / {risk_percent * reward_ratio:.1f}% (1:{reward_ratio:.1f})")
+else:
+    stop_loss = st.sidebar.number_input(
+        "Stop Loss (%)",
+        min_value=0.0,
+        max_value=20.0,
+        value=3.0,
+        step=0.5,
+        help="Set to 0 to disable stop loss"
+    ) / 100
+    
+    take_profit = st.sidebar.number_input(
+        "Take Profit (%)",
+        min_value=0.0,
+        max_value=50.0,
+        value=6.0,
+        step=0.5,
+        help="Set to 0 to disable take profit"
+    ) / 100
 
 # Run Backtest Button
 if st.sidebar.button("🚀 Run Backtest", type="primary"):
@@ -188,36 +227,53 @@ if st.sidebar.button("🚀 Run Backtest", type="primary"):
                     if data.empty:
                         st.error("No valid data available after cleaning.")
                     else:
-                        # Initialize strategy builder and backtesting engine
-                        strategy_builder = StrategyBuilder(strategy_type, strategy_params)
-                        engine = BacktestingEngine(
-                            initial_capital=initial_capital,
-                            position_size=position_size,
-                            stop_loss=stop_loss if stop_loss > 0 else None,
-                            take_profit=take_profit if take_profit > 0 else None
-                        )
+                        # Debug info for troubleshooting
+                        with st.expander("Debug Info", expanded=False):
+                            st.write(f"Data shape: {data.shape}")
+                            st.write(f"Columns: {list(data.columns)}")
+                            st.write(f"Date range: {data.index[0]} to {data.index[-1]}")
+                            st.write(f"Sample data:")
+                            st.dataframe(data.head(3))
                         
-                        # Generate signals
-                        signals = strategy_builder.generate_signals(data)
+                        try:
+                            # Initialize strategy builder and backtesting engine
+                            strategy_builder = StrategyBuilder(strategy_type, strategy_params)
+                            engine = BacktestingEngine(
+                                initial_capital=initial_capital,
+                                position_size=position_size,
+                                stop_loss=stop_loss if stop_loss > 0 else None,
+                                take_profit=take_profit if take_profit > 0 else None
+                            )
+                            
+                            # Generate signals
+                            st.info("Generating trading signals...")
+                            signals = strategy_builder.generate_signals(data)
+                            st.info(f"Generated {len(signals)} trading signals")
+                            
+                            # Run backtest
+                            st.info("Running backtest simulation...")
+                            results = engine.run_backtest(data, signals)
+                            st.info("Backtest completed successfully!")
+                            
+                        except Exception as strategy_error:
+                            st.error(f"Strategy/Backtesting Error: {str(strategy_error)}")
+                            st.error("Please try a different strategy or check your parameters.")
+                            results = None
                         
-                        # Run backtest
-                        results = engine.run_backtest(data, signals)
-                        
-                        # Store results in session state
-                        st.session_state.backtest_results = results
-                        st.session_state.strategy_config = {
-                            'symbol': symbol,
-                            'strategy_type': strategy_type,
-                            'strategy_params': strategy_params,
-                            'initial_capital': initial_capital,
-                            'position_size': position_size,
-                            'stop_loss': stop_loss,
-                            'take_profit': take_profit,
-                            'start_date': start_date,
-                            'end_date': end_date
-                        }
-                        
-                        st.success("Backtest completed successfully!")
+                        # Store results in session state only if successful
+                        if results is not None:
+                            st.session_state.backtest_results = results
+                            st.session_state.strategy_config = {
+                                'symbol': symbol,
+                                'strategy_type': strategy_type,
+                                'strategy_params': strategy_params,
+                                'initial_capital': initial_capital,
+                                'position_size': position_size,
+                                'stop_loss': stop_loss,
+                                'take_profit': take_profit,
+                                'start_date': start_date,
+                                'end_date': end_date
+                            }
                 
     except Exception as e:
         st.error(f"Error running backtest: {str(e)}")
