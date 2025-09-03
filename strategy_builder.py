@@ -157,47 +157,66 @@ class StrategyBuilder:
     
     def _custom_strategy(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Custom strategy based on user-selected indicators.
+        Custom strategy based on user-selected indicators with proper position tracking.
         """
         df['Position'] = 0
-        buy_conditions = []
-        sell_conditions = []
+        current_position = 0
         
-        # Add SMA condition
+        # Calculate all indicators first
         if self.parameters.get('use_sma', False):
             sma_period = self.parameters['sma_period']
             df['SMA'] = df['Close'].rolling(window=sma_period).mean()
-            buy_conditions.append(df['Close'] > df['SMA'])
-            sell_conditions.append(df['Close'] < df['SMA'])
         
-        # Add EMA condition
         if self.parameters.get('use_ema', False):
             ema_period = self.parameters['ema_period']
             df['EMA'] = df['Close'].ewm(span=ema_period).mean()
-            buy_conditions.append(df['Close'] > df['EMA'])
-            sell_conditions.append(df['Close'] < df['EMA'])
         
-        # Add RSI condition
         if self.parameters.get('use_rsi', False):
             rsi_period = self.parameters['rsi_period']
-            rsi_buy = self.parameters['rsi_buy']
-            rsi_sell = self.parameters['rsi_sell']
             df['RSI'] = self._calculate_rsi(df['Close'], rsi_period)
-            buy_conditions.append(df['RSI'] < rsi_buy)
-            sell_conditions.append(df['RSI'] > rsi_sell)
         
-        # Combine conditions
-        if buy_conditions:
-            final_buy_condition = buy_conditions[0]
-            for condition in buy_conditions[1:]:
-                final_buy_condition = final_buy_condition & condition
-            df.loc[final_buy_condition, 'Position'] = 1
+        # Determine the start index (after indicators are calculated)
+        max_period = 1
+        if self.parameters.get('use_sma', False):
+            max_period = max(max_period, self.parameters['sma_period'])
+        if self.parameters.get('use_ema', False):
+            max_period = max(max_period, self.parameters['ema_period'])
+        if self.parameters.get('use_rsi', False):
+            max_period = max(max_period, self.parameters['rsi_period'])
         
-        if sell_conditions:
-            final_sell_condition = sell_conditions[0]
-            for condition in sell_conditions[1:]:
-                final_sell_condition = final_sell_condition & condition
-            df.loc[final_sell_condition, 'Position'] = -1
+        # Process signals with proper position tracking
+        for i in range(max_period, len(df)):
+            buy_conditions = []
+            sell_conditions = []
+            
+            # Check SMA condition
+            if self.parameters.get('use_sma', False):
+                buy_conditions.append(df['Close'].iloc[i] > df['SMA'].iloc[i])
+                sell_conditions.append(df['Close'].iloc[i] < df['SMA'].iloc[i])
+            
+            # Check EMA condition
+            if self.parameters.get('use_ema', False):
+                buy_conditions.append(df['Close'].iloc[i] > df['EMA'].iloc[i])
+                sell_conditions.append(df['Close'].iloc[i] < df['EMA'].iloc[i])
+            
+            # Check RSI condition
+            if self.parameters.get('use_rsi', False):
+                rsi_buy = self.parameters['rsi_buy']
+                rsi_sell = self.parameters['rsi_sell']
+                buy_conditions.append(df['RSI'].iloc[i] < rsi_buy)
+                sell_conditions.append(df['RSI'].iloc[i] > rsi_sell)
+            
+            # Evaluate combined conditions
+            buy_signal = all(buy_conditions) if buy_conditions else False
+            sell_signal = all(sell_conditions) if sell_conditions else False
+            
+            # Generate position changes based on current state
+            if buy_signal and current_position <= 0:
+                df.loc[df.index[i], 'Position'] = 1
+                current_position = 1
+            elif sell_signal and current_position >= 0:
+                df.loc[df.index[i], 'Position'] = -1
+                current_position = -1
         
         # Filter only actual signals
         signals = df[df['Position'] != 0].copy()

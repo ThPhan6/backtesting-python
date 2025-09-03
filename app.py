@@ -22,22 +22,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Dynamic title that updates with the selected symbol
-if 'current_symbol' not in st.session_state:
-    st.session_state.current_symbol = "AAPL"
-
-# Get current symbol
-current_symbol = symbol if 'symbol' in locals() else "AAPL"
-st.session_state.current_symbol = current_symbol
-
-st.title(f"📈 Trading Strategy Backtester + {current_symbol}")
-st.markdown("Test your trading strategies against historical market data with comprehensive performance analytics.")
-
-# Initialize session state
+# Initialize session state first
 if 'backtest_results' not in st.session_state:
     st.session_state.backtest_results = None
 if 'strategy_config' not in st.session_state:
     st.session_state.strategy_config = None
+if 'backtest_history' not in st.session_state:
+    st.session_state.backtest_history = {}
+if 'is_running_backtest' not in st.session_state:
+    st.session_state.is_running_backtest = False
 
 # Sidebar - Strategy Configuration
 st.sidebar.header("🔧 Strategy Configuration")
@@ -62,6 +55,39 @@ else:
         crypto_symbols,
         help="Select cryptocurrency to backtest"
     )
+
+# Check if symbol changed and there's an active backtest
+symbol_changed = st.session_state.get('current_symbol', '') != symbol
+if symbol_changed and st.session_state.backtest_results is not None:
+    st.warning(f"⚠️ You have an active backtest for {st.session_state.get('current_symbol', 'previous symbol')}. Changing to {symbol} will clear current results.")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️ Clear & Continue"):
+            st.session_state.backtest_results = None
+            st.session_state.strategy_config = None
+            st.session_state.current_symbol = symbol
+            st.rerun()
+    with col2:
+        if st.button("💾 Save to History"):
+            # Save current backtest to history
+            if st.session_state.strategy_config:
+                history_key = f"{st.session_state.current_symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                st.session_state.backtest_history[history_key] = {
+                    'results': st.session_state.backtest_results,
+                    'config': st.session_state.strategy_config,
+                    'timestamp': datetime.now()
+                }
+            st.session_state.backtest_results = None
+            st.session_state.strategy_config = None
+            st.session_state.current_symbol = symbol
+            st.rerun()
+
+# Update current symbol
+st.session_state.current_symbol = symbol
+
+# Dynamic title that updates with the selected symbol
+st.title(f"📈 Trading Strategy Backtester + {symbol}")
+st.markdown("Test your trading strategies against historical market data with comprehensive performance analytics.")
 
 # Time Period
 st.sidebar.subheader("📅 Time Period")
@@ -191,53 +217,100 @@ else:
         help="Set to 0 to disable take profit"
     ) / 100
 
-# Run Backtest Button
-if st.sidebar.button("🚀 Run Backtest", type="primary"):
+# Backtest History Display
+if st.session_state.backtest_history:
+    st.sidebar.subheader("📚 Backtest History")
+    history_options = []
+    for key, item in st.session_state.backtest_history.items():
+        config = item['config']
+        timestamp = item['timestamp'].strftime('%m/%d %H:%M')
+        history_options.append(f"{config['symbol']} - {config['strategy_type'][:10]} - {timestamp}")
+    
+    selected_history = st.sidebar.selectbox(
+        "Load Previous Backtest:",
+        [""] + history_options,
+        help="Select a previous backtest to view"
+    )
+    
+    if selected_history and selected_history != "":
+        history_keys = list(st.session_state.backtest_history.keys())
+        selected_key = history_keys[history_options.index(selected_history)]
+        if st.sidebar.button("📊 Load Historical Backtest"):
+            st.session_state.backtest_results = st.session_state.backtest_history[selected_key]['results']
+            st.session_state.strategy_config = st.session_state.backtest_history[selected_key]['config']
+            st.success(f"Loaded historical backtest for {st.session_state.backtest_history[selected_key]['config']['symbol']}")
+
+# Run Backtest Button with enhanced states
+button_text = "🚀 Run Backtest" if not st.session_state.is_running_backtest else "⏳ Running..."
+button_disabled = st.session_state.is_running_backtest
+
+if st.sidebar.button(button_text, type="primary", disabled=button_disabled):
+    st.session_state.is_running_backtest = True
     try:
-        with st.spinner("Fetching data and running backtest..."):
-            # Fetch data
-            data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+        # Create progress placeholders
+        progress_container = st.empty()
+        stage_container = st.empty()
+        
+        with progress_container.container():
+            progress_bar = st.progress(0, text="Starting backtest...")
+        
+        # Stage 1: Fetch Data
+        with stage_container.container():
+            st.info("📥 Stage 1/4: Fetching market data...")
+        progress_bar.progress(25, text="Fetching market data...")
+        
+        data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+        
+        # Clean and validate data
+        if data is None or data.empty:
+            st.error(f"No data found for symbol {symbol} in the specified date range.")
+            st.session_state.is_running_backtest = False
+        else:
+            # Stage 2: Process Data
+            with stage_container.container():
+                st.info("🔧 Stage 2/4: Processing and cleaning data...")
+            progress_bar.progress(50, text="Processing data...")
             
-            # Clean and validate data
-            if data is None or data.empty:
-                st.error(f"No data found for symbol {symbol} in the specified date range.")
+            # Handle multi-level columns
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = [col[0] for col in data.columns.values]
+            
+            # Ensure required columns
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            missing_cols = [col for col in required_cols if col not in data.columns]
+            
+            if missing_cols:
+                st.error(f"Missing required columns: {missing_cols}")
+                st.session_state.is_running_backtest = False
             else:
-                # Handle multi-level columns (sometimes yfinance returns ticker info in columns)
-                if isinstance(data.columns, pd.MultiIndex):
-                    # Flatten multi-level columns - take the first level (price type)
-                    data.columns = [col[0] for col in data.columns.values]
+                # Clean data
+                data = data.dropna()
+                for col in ['Open', 'High', 'Low', 'Close']:
+                    data[col] = pd.to_numeric(data[col], errors='coerce')
+                data = data.dropna()
                 
-                # Ensure we have the required OHLCV columns
-                required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-                missing_cols = [col for col in required_cols if col not in data.columns]
-                
-                if missing_cols:
-                    st.error(f"Missing required columns: {missing_cols}")
+                if data.empty:
+                    st.error("No valid data available after cleaning.")
+                    st.session_state.is_running_backtest = False
                 else:
-                    # Clean the data - remove any rows with invalid data
-                    data = data.dropna()
+                    # Stage 3: Generate Signals
+                    with stage_container.container():
+                        st.info("📊 Stage 3/4: Generating trading signals...")
+                    progress_bar.progress(75, text="Generating trading signals...")
                     
-                    # Ensure all price columns are numeric
-                    for col in ['Open', 'High', 'Low', 'Close']:
-                        data[col] = pd.to_numeric(data[col], errors='coerce')
-                    
-                    # Remove any remaining invalid rows
-                    data = data.dropna()
-                    
-                    if data.empty:
-                        st.error("No valid data available after cleaning.")
-                    else:
-                        # Debug info for troubleshooting
-                        with st.expander("Debug Info", expanded=False):
-                            st.write(f"Data shape: {data.shape}")
-                            st.write(f"Columns: {list(data.columns)}")
-                            st.write(f"Date range: {data.index[0]} to {data.index[-1]}")
-                            st.write(f"Sample data:")
-                            st.dataframe(data.head(3))
+                    try:
+                        strategy_builder = StrategyBuilder(strategy_type, strategy_params)
+                        signals = strategy_builder.generate_signals(data)
                         
-                        try:
-                            # Initialize strategy builder and backtesting engine
-                            strategy_builder = StrategyBuilder(strategy_type, strategy_params)
+                        if len(signals) == 0:
+                            st.warning("⚠️ No trading signals generated. Try adjusting strategy parameters.")
+                            st.session_state.is_running_backtest = False
+                        else:
+                            # Stage 4: Run Backtest
+                            with stage_container.container():
+                                st.info(f"🚀 Stage 4/4: Running backtest with {len(signals)} signals...")
+                            progress_bar.progress(100, text="Running backtest simulation...")
+                            
                             engine = BacktestingEngine(
                                 initial_capital=initial_capital,
                                 position_size=position_size,
@@ -245,23 +318,9 @@ if st.sidebar.button("🚀 Run Backtest", type="primary"):
                                 take_profit=take_profit if take_profit > 0 else None
                             )
                             
-                            # Generate signals
-                            st.info("Generating trading signals...")
-                            signals = strategy_builder.generate_signals(data)
-                            st.info(f"Generated {len(signals)} trading signals")
-                            
-                            # Run backtest
-                            st.info("Running backtest simulation...")
                             results = engine.run_backtest(data, signals)
-                            st.info("Backtest completed successfully!")
                             
-                        except Exception as strategy_error:
-                            st.error(f"Strategy/Backtesting Error: {str(strategy_error)}")
-                            st.error("Please try a different strategy or check your parameters.")
-                            results = None
-                        
-                        # Store results in session state only if successful
-                        if results is not None:
+                            # Success - Store results
                             st.session_state.backtest_results = results
                             st.session_state.strategy_config = {
                                 'symbol': symbol,
@@ -274,9 +333,24 @@ if st.sidebar.button("🚀 Run Backtest", type="primary"):
                                 'start_date': start_date,
                                 'end_date': end_date
                             }
+                            
+                            # Clear progress indicators and show success
+                            progress_container.empty()
+                            stage_container.empty()
+                            st.success(f"✅ Backtest completed! Generated {len(signals)} signals, executed {len(results['trade_history'])} trades.")
+                            st.session_state.is_running_backtest = False
+                            
+                    except Exception as strategy_error:
+                        st.error(f"Strategy Error: {str(strategy_error)}")
+                        st.session_state.is_running_backtest = False
                 
     except Exception as e:
         st.error(f"Error running backtest: {str(e)}")
+        st.session_state.is_running_backtest = False
+        if 'progress_container' in locals():
+            progress_container.empty()
+        if 'stage_container' in locals():
+            stage_container.empty()
 
 # Main content area
 if st.session_state.backtest_results is not None:
